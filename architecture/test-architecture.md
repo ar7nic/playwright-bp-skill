@@ -52,6 +52,10 @@
 - Flows requiring JavaScript execution or DOM interaction
 - Third-party iframe interactions
 
+> **Import note.** API and component tests use plain `@playwright/test` (they don't go
+> through the page/assistant/assert layers). Only **E2E specs** import
+> `import { test } from '../fixtures'`.
+
 ```typescript
 import { test, expect } from "@playwright/test";
 

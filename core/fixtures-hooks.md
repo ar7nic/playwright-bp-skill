@@ -3,11 +3,12 @@
 ## Table of Contents
 
 1. [Built-in Fixtures](#built-in-fixtures)
-2. [Custom Fixtures](#custom-fixtures)
-3. [Fixture Scopes](#fixture-scopes)
-4. [Hooks](#hooks)
-5. [Authentication Patterns](#authentication-patterns)
-6. [Database Fixtures](#database-fixtures)
+2. [Auto-Registering DI Container](#auto-registering-di-container)
+3. [Custom Fixtures](#custom-fixtures)
+4. [Fixture Scopes](#fixture-scopes)
+5. [Hooks](#hooks)
+6. [Authentication Patterns](#authentication-patterns)
+7. [Database Fixtures](#database-fixtures)
 
 ## Built-in Fixtures
 
@@ -36,6 +37,88 @@ test("API call", async ({ request }) => {
   expect(users).toHaveLength(5);
 });
 ```
+
+## Auto-Registering DI Container
+
+Pages, components, assistants, and asserts are **not** wired with one `test.extend()` each.
+Instead a single container builds the whole object graph once per test, and each class is
+exposed as a fixture under its camelCase name — derived automatically from **barrel
+(`index.ts`) exports**. Adding a class to a barrel creates its fixture; this file never
+changes.
+
+**Always import `test` and `expect` from `fixtures/`, never from `@playwright/test`:**
+
+```typescript
+import { test, expect } from '../fixtures';
+```
+
+### The container
+
+```typescript
+// fixtures/container.ts
+import { Page } from '@playwright/test';
+import * as Asserts from '../asserts';
+import * as Assistants from '../assistants';
+import * as Components from '../components';
+import * as Pages from '../pages';
+
+const uncap = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);  // 'LoginPage' → 'loginPage'
+
+export type AppDeps = { page: Page } & /* …mapped instance types of each barrel… */ Record<string, unknown>;
+
+export const FIXTURE_NAMES: string[] = [
+  ...Object.keys(Pages), ...Object.keys(Components),
+  ...Object.keys(Assistants), ...Object.keys(Asserts),
+].map(uncap);
+
+/** One shared `app` object: pages take `page`; assistants/asserts take `app` (so they can
+ *  read other pages/assistants lazily at call time). */
+export function buildApp(page: Page): AppDeps {
+  const app = { page } as Record<string, unknown>;
+  for (const [n, C] of Object.entries(Pages))      app[uncap(n)] = new (C as any)(page);
+  for (const [n, C] of Object.entries(Components))  app[uncap(n)] = new (C as any)(page);
+  for (const [n, C] of Object.entries(Assistants))  app[uncap(n)] = new (C as any)(app);
+  for (const [n, C] of Object.entries(Asserts))     app[uncap(n)] = new (C as any)(app);
+  return app as AppDeps;
+}
+```
+
+### Wiring fixtures from the container
+
+```typescript
+// fixtures/index.ts
+import { test as base } from '@playwright/test';
+import { AppDeps, buildApp, FIXTURE_NAMES } from './container';
+
+const fixtureDefs: Record<string, unknown> = {
+  // one container, depends only on `page`
+  __app: async ({ page }, use) => { await use(buildApp(page)); },
+};
+
+// each named fixture just pulls its instance out of the container
+for (const name of FIXTURE_NAMES) {
+  fixtureDefs[name] = async ({ __app }: { __app: AppDeps }, use: (v: unknown) => Promise<void>) =>
+    use((__app as Record<string, unknown>)[name]);
+}
+
+export const test = base.extend(fixtureDefs as any);
+export { expect } from '@playwright/test';
+```
+
+Now any spec can request a page/component/assistant/assert by name:
+
+```typescript
+import { test } from '../fixtures';
+
+test('login @smoke', async ({ authAssistant, commonAsserts }) => {
+  await authAssistant.loginAndWaitForDashboard('tomsmith', 'SuperSecretPassword!');
+  await commonAsserts.urlMatches(/.*\/secure/);
+});
+```
+
+> Trade-off to be aware of: the container depends only on `page`, so per-class
+> setup/teardown is not expressed here. Resources with a real lifecycle (auth, DB, API
+> clients) still use hand-written `test.extend()` fixtures — see below.
 
 ## Custom Fixtures
 

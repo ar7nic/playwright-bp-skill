@@ -18,7 +18,7 @@
 npx playwright init                           # scaffold config + first test
 npx playwright test --config=custom.config.ts # use alternate config
 npx playwright test --project=chromium        # run single project
-npx playwright test --reporter=html           # override reporter
+npx playwright test                           # use reporters from config (don't pass --reporter; it disables Allure)
 npx playwright test --grep @smoke             # run tests tagged @smoke
 npx playwright test --grep-invert @slow       # exclude @slow tests
 npx playwright show-report                    # open last HTML report
@@ -55,6 +55,7 @@ DEBUG=pw:api npx playwright test              # verbose logging
 | Mobile-responsive app | Add mobile projects alongside desktop |
 | Auth + non-auth tests | Setup project with dependencies |
 | Tight CI budget | Chromium on PRs; all browsers on main |
+| Multiple target sites/apps | Per-site projects (own setup + `storageState`); browser as env-gated axis — see [projects-dependencies.md](projects-dependencies.md) |
 
 ### globalSetup vs Setup Projects vs Fixtures
 
@@ -84,9 +85,10 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? '50%' : undefined,
 
+  // Allure-first reporting (see infrastructure-ci-cd/reporting.md)
   reporter: process.env.CI
-    ? [['html', { open: 'never' }], ['github']]
-    : [['html', { open: 'on-failure' }]],
+    ? [['line'], ['allure-playwright', { resultsDir: 'allure-results', detail: false, suiteTitle: true }], ['github']]
+    : [['line'], ['allure-playwright', { resultsDir: 'allure-results', detail: false, suiteTitle: true }]],
 
   timeout: 30_000,
   expect: { timeout: 5_000 },
@@ -102,6 +104,9 @@ export default defineConfig({
     timezoneId: 'America/Los_Angeles',
   },
 
+  // Single-app browser matrix. For MULTIPLE target sites, partition projects by site and
+  // make the browser an env-gated axis — see projects-dependencies.md
+  // ("Per-site projects + env-gated browser matrix").
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },

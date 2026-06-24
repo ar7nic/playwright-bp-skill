@@ -428,7 +428,9 @@ stages:
 
 ## JUnit Reporter Config
 
-All platforms benefit from JUnit output for native test result display:
+All platforms benefit from JUnit output for native test result display. This project is
+**Allure-first**, so keep `allure-playwright` as the primary reporter alongside JUnit (see
+[reporting.md](reporting.md#allure-default)):
 
 ```typescript
 // playwright.config.ts
@@ -438,10 +440,10 @@ export default defineConfig({
   reporter: process.env.CI
     ? [
         ["dot"],
-        ["html", { open: "never" }],
+        ["allure-playwright", { resultsDir: "allure-results", detail: false }],
         ["junit", { outputFile: "results/junit.xml" }],
       ]
-    : [["html", { open: "on-failure" }]],
+    : [["line"], ["allure-playwright", { detail: false }]],
 });
 ```
 

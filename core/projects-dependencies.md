@@ -11,7 +11,58 @@
 
 ## Project Configuration
 
+### Per-site projects + env-gated browser matrix (recommended)
+
+When the suite targets **multiple applications/sites**, partition projects **by site** —
+each with its own setup spec and `storageState` — and treat the browser as a *second axis*
+that is enabled only in nightly/main runs via an env flag. This keeps PRs fast (chromium
+only) while still catching cross-browser regressions on schedule. See `decide.md` (item 15).
+
+```typescript
+// playwright.config.ts
+import { defineConfig, devices } from "@playwright/test";
+import { TI_BASE_URL, LB_BASE_URL, STORAGE_STATE } from "./config/env";
+
+// chromium on PRs; full matrix when FULL_MATRIX is set (nightly/main)
+const browsers = process.env.FULL_MATRIX
+  ? [
+      ["chromium", devices["Desktop Chrome"]],
+      ["firefox", devices["Desktop Firefox"]],
+      ["webkit", devices["Desktop Safari"]],
+    ] as const
+  : [["chromium", devices["Desktop Chrome"]]] as const;
+
+// each site contributes a setup project + one project per browser
+const sites = [
+  { name: "the-internet", baseURL: TI_BASE_URL, storageState: STORAGE_STATE.theInternet, setup: /the-internet\.setup\.ts/, match: /.*\.spec\.ts/ },
+  { name: "lifebase",     baseURL: LB_BASE_URL, storageState: STORAGE_STATE.lifebase,     setup: /lifebase\.setup\.ts/,     match: /certificates\.spec\.ts/ },
+];
+
+export default defineConfig({
+  projects: sites.flatMap((site) => [
+    { name: `setup:${site.name}`, testMatch: site.setup, use: { baseURL: site.baseURL } },
+    ...browsers.map(([bName, device]) => ({
+      name: `${site.name}-${bName}`,
+      testMatch: site.match,
+      use: { ...device, baseURL: site.baseURL, storageState: site.storageState },
+      dependencies: [`setup:${site.name}`],
+    })),
+  ]),
+});
+```
+
+```bash
+npx playwright test                 # PR: chromium only, both sites
+FULL_MATRIX=1 npx playwright test   # nightly/main: chromium + firefox + webkit
+```
+
+The cross-browser matrix below is the right model when you target **one** application.
+
 ### Basic Multi-Browser Setup
+
+Use this when you target a **single application**. For **multiple sites**, prefer the
+per-site pattern above (each site gets its own setup + `storageState`; browser is an
+env-gated axis).
 
 ```typescript
 // playwright.config.ts

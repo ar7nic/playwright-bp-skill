@@ -96,9 +96,13 @@ export default defineConfig({
 
   reporter: process.env.CI
     ? [["blob"], ["github"]]
-    : [["html", { open: "on-failure" }]],
+    : [["line"], ["allure-playwright", { detail: false }]],
 });
 ```
+
+> For sharded CI keep **`blob`** (it's what `merge-reports` consumes). Generate the
+> Allure report from the merged `allure-results` after merging — see
+> [reporting.md](reporting.md#allure-default).
 
 ### Merging Shard Reports
 

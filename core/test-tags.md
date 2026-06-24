@@ -14,6 +14,12 @@
 
 ## Basic Tagging
 
+> **Import convention.** Tagging works identically regardless of where `test` comes from.
+> In this framework, **E2E specs import `import { test } from '../fixtures'`** (not
+> `@playwright/test`) — the examples below use the plain import only to keep the focus on
+> tagging. See [page-object-model.md](page-object-model.md) and
+> [fixtures-hooks.md](fixtures-hooks.md).
+
 ### Tag via Details Object
 
 ```typescript

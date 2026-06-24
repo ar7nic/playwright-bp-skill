@@ -568,6 +568,8 @@ export class LoginPage {
 import { test, expect } from "@playwright/test";
 import { LoginPage } from "../page-objects/LoginPage";
 
+// Tip: extract this to a const (e.g. NO_AUTH in config/testData.ts) and reuse it —
+// see core/test-data.md. test.use(NO_AUTH);
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe("login page", () => {

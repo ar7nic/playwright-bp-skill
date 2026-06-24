@@ -11,6 +11,55 @@ metadata:
 
 This skill provides comprehensive guidance for all aspects of Playwright test development, from writing new tests to debugging and maintaining existing test suites.
 
+## Framework Architecture
+
+This skill targets a **layered, convention-driven framework**. Each layer only calls the
+layer below it:
+
+```
+tests/          → scenarios only; use fixtures + asserts. No direct page/locator calls
+assistants/     → multi-step, cross-page workflows (login, checkout)
+asserts/        → verification helpers wrapping expect() in test.step ("ASSERT ...")
+pages/          → page objects: locators only (extend BasePage, set PAGE_NAME)
+components/     → reusable UI blocks (NavBar, Modal)
+utils/Element   → Playwright Locator wrapper; every action auto-logs to test.step
+utils/ElementFactory → builds Elements with consistent '[Page] "Name"' labels
+fixtures/       → auto-registering DI container; exports `test` and `expect`
+config/         → URLs, credentials, storageState paths (from process.env)
+```
+
+### Critical conventions
+
+- **Import `test` and `expect` from `fixtures/`, never from `@playwright/test`** in specs:
+  `import { test, expect } from '../fixtures';`
+- **Never call Playwright locator methods directly in tests or page objects.** Declare
+  locators via the `this.el` factory on `BasePage` and act through the returned `Element`
+  (which wraps every action in `test.step`). See [core/locators.md](core/locators.md).
+- **Page objects hold locators only.** Behaviour lives in `assistants/`; verification lives
+  in `asserts/`. See [core/page-object-model.md](core/page-object-model.md).
+- **Every action and assertion auto-logs** to Allure/HTML reports. Never add manual
+  `test.step` calls inside page objects, components, assistants, or asserts — the `Element`
+  and assert layers handle it. See [core/annotations.md](core/annotations.md).
+- **Use `asserts/` helpers (e.g. `CommonAsserts`) instead of raw `expect()` in tests** so
+  reports show readable assertion names. See [core/assertions-waiting.md](core/assertions-waiting.md).
+- **Adding a class to a barrel `index.ts` auto-creates its fixture** — no manual wiring.
+  See [core/fixtures-hooks.md](core/fixtures-hooks.md).
+- **Reporting is Allure-first.** See [infrastructure-ci-cd/reporting.md](infrastructure-ci-cd/reporting.md).
+
+### Resolved conventions (see `decide.md` for rationale)
+
+- **Test data**: split by responsibility — `config/` (`env.ts`, `testData.ts`) for
+  environment, credentials, storageState paths, and fixed negative data; `helpers/`
+  factories for entities a test **creates** (randomised per test). See [core/test-data.md](core/test-data.md).
+- **Timeouts**: centralised in `playwright.config.ts` (`actionTimeout`, `navigationTimeout`,
+  `expect.timeout`); the `Element` wrapper carries **no** baked-in timeout defaults. See [core/assertions-waiting.md](core/assertions-waiting.md).
+- **`BasePage`**: stays minimal (provides `el`; thin non-navigation readers only). Navigation
+  lives in `assistants/`. See [core/page-object-model.md](core/page-object-model.md).
+- **Component scoping**: page-level factory by default; container-`Locator` scope for
+  repeated/nested blocks (table rows, cards). See [core/page-object-model.md](core/page-object-model.md).
+- **Browser matrix**: projects partition by **site**; cross-browser is an extra axis enabled
+  only in nightly/main via env. See [core/projects-dependencies.md](core/projects-dependencies.md).
+
 ## Activity-Based Reference Guide
 
 Consult these references based on what you're doing:
@@ -294,10 +343,14 @@ What are you doing?
 
 After writing or modifying tests:
 
-1. **Run tests**: `npx playwright test --reporter=list`
+1. **Run tests**: `npx playwright test`
 2. **If tests fail**:
    - Review error output and trace (`npx playwright show-trace`)
    - Fix locators, waits, or assertions
    - Re-run tests
 3. **Only proceed when all tests pass**
 4. **Run multiple times** for critical tests: `npx playwright test --repeat-each=5`
+
+> **Do not pass `--reporter=` on the CLI** — it overrides the reporter list in
+> `playwright.config.ts` and disables Allure. If you need a one-off reporter, add it to the
+> `reporter` array in the config instead.

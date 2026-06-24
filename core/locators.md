@@ -2,12 +2,75 @@
 
 ## Table of Contents
 
-1. [Priority Order](#priority-order)
-2. [User-Facing Locators](#user-facing-locators)
-3. [Filtering & Chaining](#filtering--chaining)
-4. [Dynamic Content](#dynamic-content)
-5. [Shadow DOM](#shadow-dom)
-6. [Iframes](#iframes)
+1. [Declaring Locators: Element & ElementFactory](#declaring-locators-element--elementfactory)
+2. [Priority Order](#priority-order)
+3. [User-Facing Locators](#user-facing-locators)
+4. [Filtering & Chaining](#filtering--chaining)
+5. [Dynamic Content](#dynamic-content)
+6. [Shadow DOM](#shadow-dom)
+7. [Iframes](#iframes)
+
+## Declaring Locators: Element & ElementFactory
+
+In this framework you **never call Playwright locator methods directly**. Locators are
+declared through the `this.el` **ElementFactory** (available on every `BasePage`) and used
+through the returned **`Element`** wrapper. The factory carries the page name; the `Element`
+wraps every action in `test.step`, so each interaction auto-logs as
+`[PageName] "Element name" → action` in Allure/HTML reports.
+
+The `getByRole` / `getByLabel` / etc. [priority order](#priority-order) below still applies —
+the factory builders simply call those Playwright APIs under the hood.
+
+### Declaring locators (in a page object / component)
+
+```typescript
+export class LoginPage extends BasePage {
+  readonly PAGE_NAME = 'LoginPage';
+
+  // builder methods mirror Playwright's getBy* priority order:
+  get usernameInput() { return this.el.byLabel('Username input', 'Username'); }
+  get submitBtn()     { return this.el.byRole('Submit button', 'button', { name: 'Login' }); }
+  get flashMessage()  { return this.el('Flash message', '.flash'); }            // CSS/XPath
+  userRow = (name: string) =>
+    this.el(`Row "${name}"`, (s) => s.getByRole('row').filter({ hasText: name }));
+}
+```
+
+ElementFactory API (first argument is always a human-readable name used in logs/asserts):
+
+```typescript
+this.el('Button label', '#css-selector')          // CSS / XPath string
+this.el.byRole('Submit', 'button', { name: 'Submit' })
+this.el.byTestId('Search input', 'search-input')
+this.el.byText('Error message', 'Invalid credentials')
+this.el.byLabel('Email input', 'Email')
+this.el.byPlaceholder('Search', 'Search…')
+this.el.inFrame('iframe[name="stripe"]').byTestId('Card input', 'card')  // iframe scope
+```
+
+### Acting through Element
+
+```typescript
+await loginPage.submitBtn.click();   // step: [LoginPage] "Submit button" → click
+await loginPage.usernameInput.fill('tomsmith');
+
+// chaining returns a new named Element:
+await page.userRow('Alice').find('button').click();
+await results.nth(0).withText('Active').click();
+```
+
+The `Element` wrapper exposes the common actions (`click`, `fill`, `type`, `check`, `hover`,
+`press`, `selectOption`, `waitFor`, …) and readers (`getText`, `getAttribute`, `count`,
+`isVisible`, …), plus chaining helpers (`withText`, `nth`, `find`, `getByRole`,
+`getByTestId`). For assertions, pass `element.locator` (or use the `asserts/` layer — see
+[assertions-waiting.md](assertions-waiting.md)). Reference implementation:
+`utils/Element.ts`, `utils/ElementFactory.ts`.
+
+> **Timeouts are centralised, not baked into `Element`.** Action methods do **not** carry
+> hard-coded timeout defaults — base timing comes from `actionTimeout` /
+> `navigationTimeout` / `expect.timeout` in `playwright.config.ts`. Methods still accept an
+> optional `timeout` argument for the rare slow case. See
+> [configuration.md](configuration.md) and `decide.md` (item 12).
 
 ## Priority Order
 

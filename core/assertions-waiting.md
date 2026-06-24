@@ -2,12 +2,86 @@
 
 ## Table of Contents
 
-1. [Web-First Assertions](#web-first-assertions)
-2. [Generic Assertions](#generic-assertions)
-3. [Soft Assertions](#soft-assertions)
-4. [Waiting Strategies](#waiting-strategies)
-5. [Polling & Retrying](#polling--retrying)
-6. [Custom Matchers](#custom-matchers)
+1. [The asserts/ Layer](#the-asserts-layer)
+2. [Web-First Assertions](#web-first-assertions)
+3. [Generic Assertions](#generic-assertions)
+4. [Soft Assertions](#soft-assertions)
+5. [Waiting Strategies](#waiting-strategies)
+6. [Polling & Retrying](#polling--retrying)
+7. [Custom Matchers](#custom-matchers)
+
+## The asserts/ Layer
+
+In this framework, tests **do not call `expect()` directly**. Verifications live in an
+`asserts/` layer — classes like `CommonAsserts` whose methods wrap a web-first `expect` in a
+`test.step` prefixed with `ASSERT …`, so every check shows up as a named, readable step in
+Allure/HTML reports. The methods take an [`Element`](locators.md) (and read `element.locator`
+internally) or the `page` from the injected deps.
+
+```typescript
+// asserts/CommonAsserts.ts
+import { expect, test } from '@playwright/test';
+import type { AppDeps } from '../fixtures/container';
+import { Element } from '../utils/Element';
+
+export class CommonAsserts {
+  constructor(private readonly deps: AppDeps) {}
+
+  async elementIsVisible(elem: Element, timeout?: number): Promise<void> {
+    await test.step(`ASSERT "${elem.name}" is visible`, async () => {
+      await expect(elem.locator).toBeVisible({ timeout });
+    });
+  }
+
+  async elementContainsText(elem: Element, text: string | RegExp): Promise<void> {
+    await test.step(`ASSERT "${elem.name}" contains text "${text}"`, async () => {
+      await expect(elem.locator).toContainText(text);
+    });
+  }
+
+  async urlMatches(pattern: string | RegExp): Promise<void> {
+    await test.step(`ASSERT URL matches "${pattern}"`, async () => {
+      await expect(this.deps.page).toHaveURL(pattern);
+    });
+  }
+
+  /** For values obtained outside a locator (e.g. a returned string). */
+  async textContains(actual: string, expected: string): Promise<void> {
+    await test.step(`ASSERT text contains "${expected}"`, async () => {
+      expect(actual).toContain(expected);
+    });
+  }
+}
+```
+
+Usage in a test (asserts arrive as fixtures; never import raw `expect`):
+
+```typescript
+import { test } from '../fixtures';
+
+test('dashboard shows welcome', async ({ authAssistant, dashboardPage, commonAsserts }) => {
+  await authAssistant.loginAndWaitForDashboard('tomsmith', 'SuperSecretPassword!');
+  await commonAsserts.elementContainsText(dashboardPage.welcomeMsg, 'logged into a secure area');
+  await commonAsserts.urlMatches(/.*\/secure/);
+});
+```
+
+Add page-specific checks in their own assert classes (e.g. `EntityProfileAsserts`); each is
+auto-registered as a fixture via its barrel (see [fixtures-hooks.md](fixtures-hooks.md)).
+
+For checking several elements at once and surfacing **all** failures in one run, add a
+group helper using `expect.soft` — it stays in the `asserts/` layer:
+
+```typescript
+async allVisible(...els: Element[]): Promise<void> {
+  await test.step(`ASSERT all visible: ${els.map((e) => e.name).join(', ')}`, async () => {
+    for (const el of els) await expect.soft(el.locator).toBeVisible();
+  });
+}
+```
+
+The matchers below are the **web-first `expect` API these assert methods are built on** —
+use them inside `asserts/`, not directly in specs.
 
 ## Web-First Assertions
 
@@ -315,25 +389,31 @@ await expect(page).toHaveDataLoaded();
 
 ## Timeouts
 
-### Configure Timeouts
+**Configure timeouts centrally** in `playwright.config.ts` — one source of truth — and rely
+on web-first auto-waiting. Do **not** bake per-action timeout defaults into the `Element`
+wrapper (its methods delegate to Playwright with these config values). Reserve per-call
+`timeout` overrides for genuine exceptions (a single known-slow action). See `decide.md`
+(item 12).
 
 ```typescript
-// playwright.config.ts
+// playwright.config.ts — base timing lives here
 export default defineConfig({
-  timeout: 30000, // Test timeout
-  expect: {
-    timeout: 5000, // Assertion timeout
+  timeout: 30_000,                 // whole-test timeout
+  expect: { timeout: 5_000 },      // assertion timeout
+  use: {
+    actionTimeout: 10_000,         // click/fill/etc. (raise in CI if needed)
+    navigationTimeout: 15_000,     // goto/waitForURL
   },
 });
 
-// Per-test timeout
+// Per-test override (rare)
 test("long test", async ({ page }) => {
-  test.setTimeout(60000);
+  test.setTimeout(60_000);
   // ...
 });
 
-// Per-assertion timeout
-await expect(page.getByRole("button")).toBeVisible({ timeout: 10000 });
+// Per-call override (exception only)
+await expect(page.getByRole("button")).toBeVisible({ timeout: 10_000 });
 ```
 
 ## Best Practices

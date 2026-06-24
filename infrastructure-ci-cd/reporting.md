@@ -37,6 +37,54 @@ npx playwright merge-reports --reporter=html ./blob-report
 
 ## Reporter Configuration
 
+### Allure (default)
+
+This framework uses **Allure as the primary reporter** (richer dashboards, history/trends,
+suites, and an Environment block). `test.step` calls — emitted automatically by the
+`Element` wrapper and the `asserts/` layer — flow straight into Allure.
+
+```typescript
+// playwright.config.ts
+import * as os from 'node:os';
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  reporter: [
+    ['line'],
+    ['allure-playwright', {
+      resultsDir: 'allure-results',
+      detail: false,        // drop low-level pw:api steps; keep our test.step labels
+      suiteTitle: true,     // group tests by file
+      environmentInfo: {    // shown in Allure's Environment widget
+        OS: os.platform(),
+        Node: process.version,
+        Environment: process.env.ENV || 'dev',
+      },
+    }],
+  ],
+});
+```
+
+```jsonc
+// package.json scripts
+{
+  "test": "playwright test",
+  "allure:generate": "allure generate allure-results --clean -o allure-report",
+  "allure:open": "allure open allure-report",
+  "allure:serve": "allure serve allure-results"   // generate + open in one step
+}
+```
+
+- **Requires Java (JRE)** to generate/open the report (`allure-commandline`).
+- **Verified versions:** `@playwright/test` 1.60 + `allure-playwright` 3.9 (the 3.x line
+  needs Playwright ≥ 1.53). Pin these in `package-lock.json`.
+- **Never pass `--reporter=` on the CLI** — it overrides the config list and disables
+  Allure. Add any one-off reporter to the `reporter` array instead.
+
+The built-in **HTML reporter** below remains available as an optional addition (e.g. for
+quick local drill-down or when Java isn't installed) — add `['html', { open: 'never' }]` to
+the `reporter` array.
+
 ### Environment-Based Setup
 
 ```typescript
@@ -313,13 +361,16 @@ blob-report/
 
 ## Decision Guide
 
+This project is **Allure-first** (see [Allure (default)](#allure-default)). The HTML reporter
+is optional and can be added alongside Allure for quick local drill-down.
+
 | Scenario | Reporter Configuration |
 |---|---|
-| Local development | `[['list'], ['html', { open: 'on-failure' }]]` |
-| GitHub Actions | `[['dot'], ['html'], ['github']]` |
-| GitLab CI | `[['dot'], ['html'], ['junit']]` |
-| Azure DevOps / Jenkins | `[['dot'], ['html'], ['junit']]` |
-| Sharded CI | `[['blob'], ['github']]` |
+| Local development | `[['line'], ['allure-playwright', { detail: false }]]` (add `['html', { open: 'on-failure' }]` if useful) |
+| GitHub Actions | `[['dot'], ['allure-playwright', { detail: false }], ['github']]` |
+| GitLab CI | `[['dot'], ['allure-playwright', { detail: false }], ['junit']]` |
+| Azure DevOps / Jenkins | `[['dot'], ['allure-playwright', { detail: false }], ['junit']]` |
+| Sharded CI | `[['blob'], ['github']]` — merge shards, then generate Allure from results |
 | Custom dashboard | `[['json', { outputFile: '...' }]]` + custom reporter |
 
 | Artifact | When to Collect | Retention | Upload Condition |
@@ -335,12 +386,12 @@ blob-report/
 
 | Anti-Pattern | Problem | Solution |
 |---|---|---|
-| No reporter configured | Default `list` only; no persistent report | Configure `html` + CI reporter |
+| No reporter configured | Default `list` only; no persistent report | Configure `allure-playwright` (+ CI reporter) |
 | `trace: 'on'` in CI | Massive artifacts, slow uploads | Use `trace: 'on-first-retry'` |
 | `video: 'on'` in CI | Enormous storage, slower tests | Use `video: 'retain-on-failure'` |
 | Upload artifacts only on failure | No report when tests pass | Upload with `if: ${{ !cancelled() }}` |
 | No retention limits | CI storage fills quickly | Set `retention-days: 7-14` |
-| Only `dot` reporter | Cannot drill into failures | Pair `dot` with `html` |
+| Only `dot` reporter | Cannot drill into failures | Pair `dot` with `allure-playwright` (or `html`) |
 | JUnit to stdout | Interferes with console output | Write to file |
 | Blocking `onEnd` in custom reporter | Slow HTTP calls delay pipeline | Use `Promise.race` with timeout |
 

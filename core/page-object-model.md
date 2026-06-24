@@ -3,310 +3,311 @@
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Basic Structure](#basic-structure)
-3. [Component Objects](#component-objects)
-4. [Composition Patterns](#composition-patterns)
-5. [Factory Functions](#factory-functions)
-6. [Best Practices](#best-practices)
+2. [Page Class (locators only)](#page-class-locators-only)
+3. [Assistants (behaviour layer)](#assistants-behaviour-layer)
+4. [Usage in Tests](#usage-in-tests)
+5. [Component Objects](#component-objects)
+6. [Composition Patterns](#composition-patterns)
+7. [Factory Functions](#factory-functions)
+8. [Best Practices](#best-practices)
 
 ## Overview
 
-Page Object Model encapsulates page structure and interactions, providing:
+This framework splits the classic Page Object into focused layers:
 
-- **Maintainability**: Change selectors in one place
-- **Reusability**: Share page interactions across tests
-- **Readability**: Tests express intent, not implementation
+- **`pages/`** — page objects that hold **locators only** (declared via the `this.el`
+  factory). One class per logical page; no actions, no assertions.
+- **`assistants/`** — multi-step, cross-page **workflows** (login, checkout) that drive the
+  pages. This is where behaviour lives.
+- **`asserts/`** — verification helpers (see [assertions-waiting.md](assertions-waiting.md)).
 
-## Basic Structure
+This keeps each piece single-responsibility: selectors are isolated from flows, flows are
+isolated from assertions, and reports stay readable because every layer logs to `test.step`
+automatically.
 
-### Page Class
+## Page Class (locators only)
+
+A page extends `BasePage`, sets `PAGE_NAME`, and exposes locators through `this.el`
+(see [locators.md](locators.md)). It contains **no flow methods and no `expect`** —
+those belong in assistants and asserts respectively.
 
 ```typescript
-// pages/login.page.ts
-import { Page, Locator, expect } from "@playwright/test";
+// pages/LoginPage.ts
+import { BasePage } from '../utils/BasePage';
 
-export class LoginPage {
-  readonly page: Page;
-  readonly emailInput: Locator;
-  readonly passwordInput: Locator;
-  readonly submitButton: Locator;
-  readonly errorMessage: Locator;
+export class LoginPage extends BasePage {
+  readonly PAGE_NAME = 'LoginPage';
 
-  constructor(page: Page) {
-    this.page = page;
-    this.emailInput = page.getByLabel("Email");
-    this.passwordInput = page.getByLabel("Password");
-    this.submitButton = page.getByRole("button", { name: "Sign in" });
-    this.errorMessage = page.getByRole("alert");
+  get usernameInput() { return this.el.byLabel('Username input', 'Username'); }
+  get passwordInput() { return this.el.byLabel('Password input', 'Password'); }
+  get submitBtn()     { return this.el.byRole('Submit button', 'button', { name: 'Login' }); }
+  get flashMessage()  { return this.el('Flash message', '.flash'); }
+}
+```
+
+`BasePage` provides the `el` factory bound to `PAGE_NAME` (reference: `utils/BasePage.ts`):
+
+```typescript
+export abstract class BasePage {
+  abstract readonly PAGE_NAME: string;
+  protected get el(): ElementFactory {
+    return createElementFactory(this.page, this.PAGE_NAME);
   }
+  constructor(protected readonly page: Page) {}
+}
+```
 
-  async goto() {
-    await this.page.goto("/login");
-  }
+> **Keep `BasePage` minimal.** Its job is to provide `el`. Thin, **non-navigation** readers
+> (e.g. `getTitle()`) may be added if widely reused, but **navigation and flows stay in
+> `assistants/`** — don't add an `abstract goto()` or other behaviour to the base class. See
+> `decide.md` (item 13).
 
-  async login(email: string, password: string) {
-    await this.emailInput.fill(email);
-    await this.passwordInput.fill(password);
-    await this.submitButton.click();
-  }
+## Assistants (behaviour layer)
 
-  async expectError(message: string) {
-    await expect(this.errorMessage).toContainText(message);
+Assistants encapsulate the multi-step flows that used to live as methods on page objects.
+They receive the per-test dependency container (`AppDeps`) and read pages/other assistants
+lazily, so cross-layer calls work. Each public method is one logical flow.
+
+```typescript
+// assistants/AuthAssistant.ts
+import { test } from '@playwright/test';
+import type { AppDeps } from '../fixtures/container';
+
+export class AuthAssistant {
+  constructor(private readonly deps: AppDeps) {}
+
+  async loginAndWaitForDashboard(username: string, password: string): Promise<void> {
+    await test.step(`Auth → login as "${username}"`, async () => {
+      await this.deps.page.goto('/login', { waitUntil: 'domcontentloaded' });
+      await this.deps.loginPage.usernameInput.fill(username);
+      await this.deps.loginPage.passwordInput.fill(password);
+      await this.deps.loginPage.submitBtn.click();
+      await this.deps.page.waitForLoadState('load');
+    });
   }
 }
 ```
 
-### Usage in Tests
+> A `test.step` wrapping the **whole flow** is appropriate in an assistant (it groups the
+> auto-logged element steps underneath). Do **not** wrap individual actions — the `Element`
+> wrapper already does. See [annotations.md](annotations.md).
+
+### Trimming assistant boilerplate
+
+A thin `BaseAssistant` removes repeated `this.deps.page…` and gives one navigation+wait
+helper. It lives in the same `assistants/` folder — no structural change:
+
+```typescript
+// assistants/BaseAssistant.ts
+import type { AppDeps } from '../fixtures/container';
+
+export abstract class BaseAssistant {
+  constructor(protected readonly deps: AppDeps) {}
+  protected get page() { return this.deps.page; }
+
+  /** navigate + wait for load in one call */
+  protected async open(path: string) {
+    await this.page.goto(path, { waitUntil: 'domcontentloaded' });
+    await this.page.waitForLoadState('load');
+  }
+}
+```
+
+Concrete assistants then read cleaner. Destructure `this.deps` at the top of a method to
+cut noise further:
+
+```typescript
+export class AuthAssistant extends BaseAssistant {
+  async loginAndWaitForDashboard(username: string, password: string) {
+    const { loginPage } = this.deps;
+    await test.step(`Auth → login as "${username}"`, async () => {
+      await this.open('/login');
+      await loginPage.usernameInput.fill(username);
+      await loginPage.passwordInput.fill(password);
+      await loginPage.submitBtn.click();
+    });
+  }
+}
+```
+
+## Usage in Tests
+
+Tests import `test`/`expect` from `fixtures/`, request the assistants/pages/asserts they
+need as fixtures, and never touch raw locators or `expect`:
 
 ```typescript
 // tests/login.spec.ts
-import { test, expect } from "@playwright/test";
-import { LoginPage } from "../pages/login.page";
+import { THE_INTERNET_USER } from '../config/env';
+import { INVALID_LOGIN } from '../config/testData';
+import { test } from '../fixtures';
 
-test.describe("Login", () => {
-  test("successful login redirects to dashboard", async ({ page }) => {
-    const loginPage = new LoginPage(page);
-    await loginPage.goto();
-    await loginPage.login("user@example.com", "password123");
-    await expect(page).toHaveURL("/dashboard");
+test.describe('Login page', () => {
+  test('successful login redirects to secure area @smoke', async ({
+    authAssistant,
+    commonAsserts,
+  }) => {
+    await authAssistant.loginAndWaitForDashboard(
+      THE_INTERNET_USER.username,
+      THE_INTERNET_USER.password,
+    );
+    await commonAsserts.urlMatches(/.*\/secure/);
   });
 
-  test("shows error for invalid credentials", async ({ page }) => {
-    const loginPage = new LoginPage(page);
-    await loginPage.goto();
-    await loginPage.login("invalid@example.com", "wrong");
-    await loginPage.expectError("Invalid credentials");
+  test('shows error for invalid credentials', async ({ authAssistant, commonAsserts }) => {
+    const error = await authAssistant.loginExpectError(
+      INVALID_LOGIN.username,
+      INVALID_LOGIN.password,
+    );
+    await commonAsserts.textContains(error, 'Your username is invalid!');
   });
 });
 ```
 
 ## Component Objects
 
-For reusable UI components:
+Reusable UI blocks (`NavBar`, `Modal`) live in `components/`. They declare locators with
+their own `ElementFactory` (named for the component) and — unlike pages — **may carry small
+interaction methods** for the block they own (a navbar knows how to log out of itself).
 
 ```typescript
-// components/navbar.component.ts
-import { Page, Locator } from "@playwright/test";
+// components/NavBar.ts
+import { Page } from '@playwright/test';
+import { createElementFactory } from '../utils/ElementFactory';
 
-export class NavbarComponent {
-  readonly container: Locator;
-  readonly logo: Locator;
-  readonly searchInput: Locator;
-  readonly userMenu: Locator;
+export class NavBar {
+  private get el() { return createElementFactory(this.page, 'NavBar'); }
 
-  constructor(page: Page) {
-    this.container = page.getByRole("navigation");
-    this.logo = this.container.getByRole("link", { name: "Home" });
-    this.searchInput = this.container.getByRole("searchbox");
-    this.userMenu = this.container.getByRole("button", { name: /user menu/i });
-  }
+  private get nav()         { return this.el('Nav', 'nav'); }
+  private get userMenuBtn()  { return this.nav.getByTestId('User menu button', 'user-menu'); }
+  private get logoutItem()   { return this.el.byRole('Logout menu item', 'menuitem', { name: 'Logout' }); }
 
-  async search(query: string) {
-    await this.searchInput.fill(query);
-    await this.searchInput.press("Enter");
-  }
+  constructor(private readonly page: Page) {}
 
-  async openUserMenu() {
-    await this.userMenu.click();
+  async logout(): Promise<void> {
+    await this.userMenuBtn.click();
+    await this.logoutItem.click();
   }
 }
 ```
 
+### Component scoping (recommended)
+
+Use a **hybrid** rule:
+
+- **Global, single-instance blocks** (`NavBar`, `Header`) — build page-level with
+  `createElementFactory(page, 'Name')` (as above) and let them be auto-registered as
+  fixtures.
+- **Repeated / nested blocks** (a table row, a card in a list) — scope to a parent
+  container so selectors are constrained to that subtree. Build them from a root
+  `Element`/`Locator` (e.g. via `Element.find(...)` / chaining) and create them explicitly
+  where needed, rather than as a global fixture.
+
 ```typescript
-// components/modal.component.ts
-import { Locator, expect } from "@playwright/test";
-
-export class ModalComponent {
-  readonly container: Locator;
-  readonly title: Locator;
-  readonly closeButton: Locator;
-  readonly confirmButton: Locator;
-
-  constructor(container: Locator) {
-    this.container = container;
-    this.title = container.getByRole("heading");
-    this.closeButton = container.getByRole("button", { name: "Close" });
-    this.confirmButton = container.getByRole("button", { name: "Confirm" });
-  }
-
-  async expectTitle(title: string) {
-    await expect(this.title).toHaveText(title);
-  }
-
-  async close() {
-    await this.closeButton.click();
-  }
-
-  async confirm() {
-    await this.confirmButton.click();
-  }
-}
+// repeated block scoped to its container row
+const row = dashboardPage.userRow('Alice');     // Element for one <tr>
+await row.find('button', 'Edit button').click();
 ```
+
+This keeps the common case compatible with the DI container while giving correct subtree
+isolation for repeated components, where a page-level binding would match the wrong element.
+See `decide.md` (item 14).
 
 ## Composition Patterns
 
-### Page with Components
+### Page exposing a component
+
+A page can expose a component getter so flows reach it through the page. The page still
+declares only locators/components — the interaction logic stays in the component (or an
+assistant for cross-page flows).
 
 ```typescript
-// pages/dashboard.page.ts
-import { Page, Locator } from "@playwright/test";
-import { NavbarComponent } from "../components/navbar.component";
-import { ModalComponent } from "../components/modal.component";
+// pages/DashboardPage.ts
+import { BasePage } from '../utils/BasePage';
+import { NavBar } from '../components/NavBar';
 
-export class DashboardPage {
-  readonly page: Page;
-  readonly navbar: NavbarComponent;
-  readonly newProjectButton: Locator;
+export class DashboardPage extends BasePage {
+  readonly PAGE_NAME = 'DashboardPage';
 
-  constructor(page: Page) {
-    this.page = page;
-    this.navbar = new NavbarComponent(page);
-    this.newProjectButton = page.getByRole("button", { name: "New Project" });
-  }
+  readonly navBar = new NavBar(this.page);
 
-  async goto() {
-    await this.page.goto("/dashboard");
-  }
-
-  async createProject() {
-    await this.newProjectButton.click();
-    return new ModalComponent(this.page.getByRole("dialog"));
-  }
+  get welcomeMsg()  { return this.el('Welcome message', '#flash'); }
+  get newProjectBtn() { return this.el.byRole('New project button', 'button', { name: 'New Project' }); }
 }
 ```
 
-### Page Navigation
+### Cross-page navigation
+
+Navigation that spans pages belongs in an **assistant**, not in a page method that returns
+another page object. The assistant drives the source page's locators, waits, then drives the
+destination page:
 
 ```typescript
-// pages/base.page.ts
-import { Page } from "@playwright/test";
-
-export abstract class BasePage {
-  constructor(readonly page: Page) {}
-
-  abstract goto(): Promise<void>;
-
-  async getTitle(): Promise<string> {
-    return this.page.title();
-  }
+// assistants/AuthAssistant.ts  (excerpt)
+async logout(): Promise<void> {
+  await test.step('Auth → logout and return to login page', async () => {
+    await this.deps.dashboardPage.navBar.logout();
+    await this.deps.page.waitForLoadState('load');
+  });
 }
-```
-
-```typescript
-// Return new page object on navigation
-export class LoginPage extends BasePage {
-  async login(email: string, password: string): Promise<DashboardPage> {
-    await this.emailInput.fill(email);
-    await this.passwordInput.fill(password);
-    await this.submitButton.click();
-    return new DashboardPage(this.page);
-  }
-}
-
-// Usage
-const loginPage = new LoginPage(page);
-await loginPage.goto();
-const dashboardPage = await loginPage.login("user@example.com", "pass");
-await dashboardPage.expectWelcomeMessage();
 ```
 
 ## Factory Functions
 
-Alternative to classes for simpler pages:
-
-```typescript
-// pages/login.page.ts
-import { Page } from "@playwright/test";
-
-export function createLoginPage(page: Page) {
-  const emailInput = page.getByLabel("Email");
-  const passwordInput = page.getByLabel("Password");
-  const submitButton = page.getByRole("button", { name: "Sign in" });
-
-  return {
-    goto: () => page.goto("/login"),
-    login: async (email: string, password: string) => {
-      await emailInput.fill(email);
-      await passwordInput.fill(password);
-      await submitButton.click();
-    },
-    emailInput,
-    passwordInput,
-    submitButton,
-  };
-}
-
-// Usage
-const loginPage = createLoginPage(page);
-await loginPage.goto();
-await loginPage.login("user@example.com", "password");
-```
+The `ElementFactory` (`createElementFactory(page, name)`) is the factory pattern this
+framework uses — for **locators**, not whole pages. Page objects themselves are plain
+classes extending `BasePage`; they are instantiated once per test by the DI container
+(see [fixtures-hooks.md](fixtures-hooks.md)), so there is no need for hand-written page
+factory functions.
 
 ## Best Practices
 
 ### Do
 
-- **Keep locators in page objects** - Single source of truth
-- **Return new page objects** when navigation occurs
-- **Expose elements** for custom assertions in tests
-- **Use descriptive method names** - `submitOrder()` not `clickButton()`
-- **Keep methods focused** - One action per method
+- **Keep pages locator-only** — declared via `this.el`; selectors are the single source of truth
+- **Put multi-step flows in `assistants/`** and verification in `asserts/`
+- **Give every locator a human name** (first factory argument) — it drives report steps
+- **Let components own small interactions** for the block they encapsulate
+- **Register classes via barrels** so the DI container wires fixtures automatically
 
 ### Don't
 
-- **Don't include assertions in page methods** (usually) - Keep in tests
-- **Don't expose implementation details** - Hide complex interactions
-- **Don't make page objects too large** - Split into components
-- **Don't share state** between page object instances
+- **Don't add flow methods or `expect` to page objects** — use assistants / asserts
+- **Don't call Playwright locators directly** — always go through `this.el` / `Element`
+- **Don't add manual `test.step` in pages/components** — the `Element` wrapper logs already
+- **Don't share state** between page object instances (the container builds fresh per test)
 
 ### Directory Structure
 
 ```
-tests/
-├── pages/
-│   ├── base.page.ts
-│   ├── login.page.ts
-│   ├── dashboard.page.ts
-│   └── settings.page.ts
-├── components/
-│   ├── navbar.component.ts
-│   ├── modal.component.ts
-│   └── table.component.ts
-├── fixtures/
-│   └── pages.fixture.ts
-└── specs/
-    ├── login.spec.ts
-    └── dashboard.spec.ts
+tests/          # specs only (import { test } from '../fixtures')
+assistants/     # AuthAssistant.ts, ...   + index.ts (barrel)
+asserts/        # CommonAsserts.ts, ...    + index.ts (barrel)
+pages/          # LoginPage.ts, DashboardPage.ts, ... + index.ts (barrel)
+components/     # NavBar.ts, Modal.ts, ... + index.ts (barrel)
+fixtures/       # container.ts, index.ts (auto-registering DI)
+utils/          # BasePage.ts, Element.ts, ElementFactory.ts
+config/         # env.ts, testData.ts
+playwright.config.ts
 ```
+
+See [test-suite-structure.md](test-suite-structure.md) for naming and barrel conventions.
 
 ### Using with Fixtures
 
+Pages, components, assistants, and asserts are **auto-registered** as fixtures from their
+barrels — you do not write per-page `test.extend()` blocks. Just request them by their
+camelCase name:
+
 ```typescript
-// fixtures/pages.fixture.ts
-import { test as base } from "@playwright/test";
-import { LoginPage } from "../pages/login.page";
-import { DashboardPage } from "../pages/dashboard.page";
+import { test } from '../fixtures';
 
-type Pages = {
-  loginPage: LoginPage;
-  dashboardPage: DashboardPage;
-};
-
-export const test = base.extend<Pages>({
-  loginPage: async ({ page }, use) => {
-    await use(new LoginPage(page));
-  },
-  dashboardPage: async ({ page }, use) => {
-    await use(new DashboardPage(page));
-  },
-});
-
-// Usage in tests
-test("can login", async ({ loginPage }) => {
-  await loginPage.goto();
-  await loginPage.login("user@example.com", "password");
+test('can login', async ({ authAssistant, commonAsserts }) => {
+  await authAssistant.loginAndWaitForDashboard('tomsmith', 'SuperSecretPassword!');
+  await commonAsserts.urlMatches(/.*\/secure/);
 });
 ```
+
+See [fixtures-hooks.md](fixtures-hooks.md) for how the container builds these.
 
 ## Related References
 

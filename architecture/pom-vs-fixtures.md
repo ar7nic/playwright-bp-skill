@@ -2,196 +2,163 @@
 
 ## Table of Contents
 
-1. [Pattern Comparison](#pattern-comparison)
-2. [Selection Flowchart](#selection-flowchart)
+1. [The Layers](#the-layers)
+2. [Layer Selection](#layer-selection)
 3. [Page Objects](#page-objects)
 4. [Custom Fixtures](#custom-fixtures)
 5. [Helper Functions](#helper-functions)
 6. [Combined Project Structure](#combined-project-structure)
 7. [Anti-Patterns](#anti-patterns)
 
-Use all three patterns together. Most projects benefit from a hybrid approach:
+This framework organises reusable code into **layers**, each with one responsibility, each
+calling only the layer below:
 
-- **Page objects** for UI interaction (pages/components with 5+ interactions)
-- **Custom fixtures** for test infrastructure (auth state, database, API clients, anything with lifecycle)
-- **Helper functions** for stateless utilities (generate data, format values, simple waits)
+- **`pages/` (page objects)** — locators only, declared via the `this.el` factory
+- **`components/`** — reusable UI blocks with small self-contained interactions
+- **`assistants/`** — multi-step, cross-page workflows (behaviour)
+- **`asserts/`** — verification helpers (web-first `expect` wrapped in `test.step`)
+- **`fixtures/`** — the auto-registering DI container that provides all of the above
+- **`utils/`** — `Element` / `ElementFactory` / `BasePage` infrastructure
+- **helpers / `config/`** — stateless utilities and constants (see note in
+  [Helper Functions](#helper-functions))
 
-If only using one pattern, choose **custom fixtures** — they handle setup/teardown, compose well, and Playwright is built around them.
+Playwright fixtures still underpin everything — but instead of writing one `test.extend()`
+per page, a single container builds the whole object graph per test and exposes each piece
+as a fixture (see [Custom Fixtures](#custom-fixtures)).
 
-## Pattern Comparison
+## The Layers
 
-| Aspect | Page Objects | Custom Fixtures | Helper Functions |
+| Layer | Purpose | Lifecycle | Holds |
 |---|---|---|---|
-| **Purpose** | Encapsulate UI interactions | Provide resources with setup/teardown | Stateless utilities |
-| **Lifecycle** | Manual (constructor/methods) | Built-in (`use()` with automatic teardown) | None |
-| **Composability** | Constructor injection or fixture wiring | Depend on other fixtures | Call other functions |
-| **Best for** | Pages with many reused interactions | Resources needing setup AND teardown | Simple logic with no side effects |
+| **Page object** | Encapsulate a page's locators | Built per test by the container | Locators only (`this.el`) |
+| **Component** | Encapsulate a reusable UI block | Built per test | Locators + small interactions |
+| **Assistant** | Multi-step / cross-page flows | Built per test (reads `AppDeps`) | Behaviour |
+| **Assert** | Verification | Built per test | `expect` wrapped in `test.step` |
+| **Custom fixture** | Resources with setup/teardown | Built-in (`use()`) | Auth state, DB, API clients |
+| **Helper** | Stateless utilities | None | Pure functions / constants |
 
-## Selection Flowchart
+## Layer Selection
 
 ```text
 What kind of reusable code?
 |
-+-- Interacts with browser page/component?
-|   |
-|   +-- Has 5+ interactions (fill, click, navigate, assert)?
-|   |   +-- YES: Used in 3+ test files?
-|   |   |   +-- YES --> PAGE OBJECT
-|   |   |   +-- NO --> Inline or small helper
-|   |   +-- NO --> HELPER FUNCTION
-|   |
-|   +-- Needs setup before AND cleanup after test?
-|       +-- YES --> CUSTOM FIXTURE
-|       +-- NO --> PAGE OBJECT method or HELPER
-|
-+-- Manages resource with lifecycle (create/destroy)?
-|   +-- Examples: auth state, DB connection, API client, test user
-|   +-- YES --> CUSTOM FIXTURE (always)
-|
-+-- Stateless utility? (no browser, no side effects)
-|   +-- Examples: random email, format date, build URL, parse response
-|   +-- YES --> HELPER FUNCTION
-|
-+-- Not sure?
-    +-- Start with HELPER FUNCTION
-    +-- Promote to PAGE OBJECT when interactions grow
-    +-- Promote to FIXTURE when lifecycle needed
++-- A page's selectors?                  --> PAGE OBJECT (locators via this.el)
++-- A reusable UI block (navbar, modal)? --> COMPONENT
++-- A multi-step / cross-page flow?       --> ASSISTANT
++-- A verification / assertion?           --> ASSERT (CommonAsserts-style)
++-- A resource needing setup AND teardown (auth, DB, API client, test user)?
+|                                        --> CUSTOM FIXTURE
++-- A stateless utility (random email, format date, build URL)?
+                                         --> HELPER / config
 ```
 
 ## Page Objects
 
-Best for pages/components with 5+ interactions appearing in 3+ test files.
+A page object holds **locators only** (declared through the `this.el` factory) — one class
+per logical page, extending `BasePage`. Behaviour goes to assistants; assertions go to
+asserts.
 
 ```typescript
-// page-objects/booking.page.ts
-import { type Page, type Locator, expect } from '@playwright/test';
+// pages/BookingPage.ts
+import { BasePage } from '../utils/BasePage';
 
-export class BookingPage {
-  readonly page: Page;
-  readonly dateField: Locator;
-  readonly guestCount: Locator;
-  readonly roomType: Locator;
-  readonly reserveBtn: Locator;
-  readonly totalPrice: Locator;
+export class BookingPage extends BasePage {
+  readonly PAGE_NAME = 'BookingPage';
 
-  constructor(page: Page) {
-    this.page = page;
-    this.dateField = page.getByLabel('Check-in date');
-    this.guestCount = page.getByLabel('Guests');
-    this.roomType = page.getByLabel('Room type');
-    this.reserveBtn = page.getByRole('button', { name: 'Reserve' });
-    this.totalPrice = page.getByTestId('total-price');
-  }
-
-  async goto() {
-    await this.page.goto('/booking');
-  }
-
-  async fillDetails(opts: { date: string; guests: number; room: string }) {
-    await this.dateField.fill(opts.date);
-    await this.guestCount.fill(String(opts.guests));
-    await this.roomType.selectOption(opts.room);
-  }
-
-  async reserve() {
-    await this.reserveBtn.click();
-    await this.page.waitForURL('**/confirmation');
-  }
-
-  async expectPrice(amount: string) {
-    await expect(this.totalPrice).toHaveText(amount);
-  }
+  get dateField()  { return this.el.byLabel('Check-in date', 'Check-in date'); }
+  get guestCount() { return this.el.byLabel('Guests', 'Guests'); }
+  get roomType()   { return this.el.byLabel('Room type', 'Room type'); }
+  get reserveBtn() { return this.el.byRole('Reserve button', 'button', { name: 'Reserve' }); }
+  get totalPrice() { return this.el.byTestId('Total price', 'total-price'); }
 }
 ```
 
 ```typescript
-// tests/booking/reservation.spec.ts
-import { test, expect } from '@playwright/test';
-import { BookingPage } from '../page-objects/booking.page';
+// assistants/BookingAssistant.ts — the flow that uses the page
+async reserveStandardRoom(date: string, guests: number): Promise<void> {
+  await test.step('Booking → reserve standard room', async () => {
+    await this.deps.page.goto('/booking');
+    await this.deps.bookingPage.dateField.fill(date);
+    await this.deps.bookingPage.guestCount.fill(String(guests));
+    await this.deps.bookingPage.roomType.selectOption('standard');
+    await this.deps.bookingPage.reserveBtn.click();
+    await this.deps.page.waitForURL('**/confirmation');
+  });
+}
+```
 
-test('complete reservation with standard room', async ({ page }) => {
-  const booking = new BookingPage(page);
-  await booking.goto();
-  await booking.fillDetails({ date: '2026-03-15', guests: 2, room: 'standard' });
-  await booking.reserve();
-  await expect(page.getByText('Reservation confirmed')).toBeVisible();
+```typescript
+// tests/booking.spec.ts
+import { test } from '../fixtures';
+
+test('complete reservation with standard room', async ({ bookingAssistant, commonAsserts }) => {
+  await bookingAssistant.reserveStandardRoom('2026-03-15', 2);
+  await commonAsserts.elementIsVisible(/* bookingPage.confirmation */);
 });
 ```
 
 **Page object principles:**
 - One class per logical page/component, not per URL
-- Constructor takes `Page`
-- Locators as `readonly` properties in constructor
-- Methods represent user intent (`reserve`, `fillDetails`), not low-level clicks
-- Navigation methods (`goto`) belong on the page object
+- Extend `BasePage`; set `PAGE_NAME`; declare locators via `this.el`
+- **Locators only** — no flow methods, no `expect`
+- Give every locator a human-readable name (the first factory argument)
 
 ## Custom Fixtures
 
-Best for resources needing setup before and teardown after tests — auth state, database connections, API clients, test users.
+Pages, components, assistants, and asserts are **auto-registered** from their barrels by the
+DI container — you do **not** hand-write a fixture for each. The container builds them once
+per test and exposes each by its camelCase name (see
+[fixtures-hooks.md](fixtures-hooks.md) and `fixtures/container.ts`):
 
 ```typescript
-// fixtures/base.fixture.ts
-import { test as base, expect } from '@playwright/test';
-import { BookingPage } from '../page-objects/booking.page';
-import { generateMember } from '../helpers/data';
+// tests/booking.spec.ts
+import { test } from '../fixtures';
 
-type Fixtures = {
-  bookingPage: BookingPage;
-  member: { email: string; password: string; id: string };
-  loggedInPage: import('@playwright/test').Page;
-};
-
-export const test = base.extend<Fixtures>({
-  bookingPage: async ({ page }, use) => {
-    await use(new BookingPage(page));
-  },
-
-  member: async ({ request }, use) => {
-    const data = generateMember();
-    const res = await request.post('/api/test/members', { data });
-    const member = await res.json();
-    await use(member);
-    await request.delete(`/api/test/members/${member.id}`);
-  },
-
-  loggedInPage: async ({ page, member }, use) => {
-    await page.goto('/login');
-    await page.getByLabel('Email').fill(member.email);
-    await page.getByLabel('Password').fill(member.password);
-    await page.getByRole('button', { name: 'Sign in' }).click();
-    await expect(page).toHaveURL('/dashboard');
-    await use(page);
-  },
+test('member sees dashboard widgets', async ({ dashboardPage, commonAsserts }) => {
+  await commonAsserts.elementIsVisible(dashboardPage.statsWidget);
 });
-
-export { expect } from '@playwright/test';
 ```
 
+Reserve **hand-written `test.extend()` fixtures for true resources with a lifecycle** —
+auth state, database connections, API clients, test users — i.e. anything that needs setup
+before and teardown after the test. Compose these on top of the container's `test`:
+
 ```typescript
-// tests/dashboard/overview.spec.ts
-import { test, expect } from '../../fixtures/base.fixture';
+// fixtures/member.fixture.ts
+import { generateMember } from '../helpers/data';
+import { test as base } from './index';   // the container's test
 
-test('member sees dashboard widgets', async ({ loggedInPage }) => {
-  await expect(loggedInPage.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
-  await expect(loggedInPage.getByTestId('stats-widget')).toBeVisible();
+type MemberFixture = { member: { email: string; password: string; id: string } };
+
+export const test = base.extend<MemberFixture>({
+  member: async ({ request }, use) => {
+    const res = await request.post('/api/test/members', { data: generateMember() });
+    const member = await res.json();
+    await use(member);
+    await request.delete(`/api/test/members/${member.id}`);  // guaranteed teardown
+  },
 });
 
-test('new member sees welcome prompt', async ({ loggedInPage, member }) => {
-  await expect(loggedInPage.getByText(`Welcome, ${member.email}`)).toBeVisible();
-});
+export { expect } from './index';
 ```
 
 **Fixture principles:**
-- Use `test.extend()` — never module-level variables
-- `use()` callback separates setup from teardown
-- Teardown runs even if test fails
-- Fixtures compose: one can depend on another
-- Fixtures are lazy: created only when requested
-- Wrap page objects in fixtures for lifecycle management
+- The container handles pages/components/assistants/asserts — add to a barrel, not a fixture
+- Use `test.extend()` for **resources with lifecycle** — never module-level variables
+- `use()` callback separates setup from teardown; teardown runs even if the test fails
+- Fixtures compose: one can depend on another; they are lazy (created only when requested)
 
 ## Helper Functions
 
 Best for stateless utilities — generating test data, formatting values, building URLs, parsing responses.
+
+> **Test-data split (recommended).** Use **both**, by responsibility:
+> `config/` (`env.ts`, `testData.ts`) holds environment, credentials, storageState paths,
+> and fixed negative data; `helpers/` factories generate the entities a test **creates**
+> (randomised per test, shown below — avoids collisions under `fullyParallel`). Keep both
+> **pure** and free of browser/`expect` logic. For verification, use the `asserts/` layer
+> ([assertions-waiting.md](../core/assertions-waiting.md)), not assertion helpers. See
+> `decide.md` (item 11).
 
 ```typescript
 // helpers/data.ts
@@ -221,61 +188,37 @@ export function formatPrice(cents: number): string {
 }
 ```
 
-```typescript
-// helpers/assertions.ts
-import { type Page, expect } from '@playwright/test';
-
-export async function expectNotification(page: Page, message: string): Promise<void> {
-  const notification = page.getByRole('alert').filter({ hasText: message });
-  await expect(notification).toBeVisible();
-  await expect(notification).toBeHidden({ timeout: 10000 });
-}
-```
+Generated data flows into an assistant via the test, while verification stays in asserts:
 
 ```typescript
-// tests/settings/account.spec.ts
-import { test, expect } from '@playwright/test';
-import { generateEmail } from '../../helpers/data';
-import { expectNotification } from '../../helpers/assertions';
+// tests/account.spec.ts
+import { generateEmail } from '../helpers/data';
+import { test } from '../fixtures';
 
-test('update account email', async ({ page }) => {
+test('update account email', async ({ accountAssistant, commonAsserts, accountPage }) => {
   const newEmail = generateEmail('updated');
-  await page.goto('/settings/account');
-  await page.getByLabel('Email').fill(newEmail);
-  await page.getByRole('button', { name: 'Save' }).click();
-  await expectNotification(page, 'Account updated');
-  await expect(page.getByLabel('Email')).toHaveValue(newEmail);
+  await accountAssistant.changeEmail(newEmail);
+  await commonAsserts.inputHasValue(accountPage.emailInput, newEmail);
 });
 ```
 
 **Helper principles:**
-- Pure functions with no side effects
-- No browser state — take `page` as parameter if needed
-- Promote to fixture if setup/teardown needed
-- Promote to page object if many page interactions grow
+- Pure functions with no side effects; no browser state, no `expect`
+- Promote to a fixture if setup/teardown is needed
 - Keep small and focused
 
 ## Combined Project Structure
 
 ```text
-tests/
-+-- fixtures/
-|   +-- auth.fixture.ts
-|   +-- db.fixture.ts
-|   +-- base.fixture.ts
-+-- page-objects/
-|   +-- login.page.ts
-|   +-- booking.page.ts
-|   +-- components/
-|       +-- data-table.component.ts
-+-- helpers/
-|   +-- data.ts
-|   +-- assertions.ts
-+-- e2e/
-|   +-- auth/
-|   |   +-- login.spec.ts
-|   +-- booking/
-|       +-- reservation.spec.ts
+tests/          # specs only
+assistants/     # AuthAssistant.ts, BookingAssistant.ts  + index.ts
+asserts/        # CommonAsserts.ts, ...                   + index.ts
+pages/          # LoginPage.ts, BookingPage.ts, ...       + index.ts
+components/     # NavBar.ts, Modal.ts, ...                + index.ts
+fixtures/       # container.ts, index.ts (auto-registering DI)
+utils/          # BasePage.ts, Element.ts, ElementFactory.ts
+helpers/        # data.ts — factories for entities a test creates (randomised)
+config/         # env.ts, testData.ts — environment, creds, fixed negative data
 playwright.config.ts
 ```
 
@@ -283,39 +226,39 @@ playwright.config.ts
 
 | Layer | Pattern | Responsibility |
 |---|---|---|
-| **Test file** | `test()` | Describes behavior, orchestrates layers |
-| **Fixtures** | `test.extend()` | Resource lifecycle — setup, provide, teardown |
-| **Page objects** | Classes | UI interaction — navigation, actions, locators |
-| **Helpers** | Functions | Utilities — data generation, formatting, assertions |
+| **Test file** | `test()` from `fixtures/` | Describes behavior, orchestrates layers |
+| **Assistants** | Classes (`AppDeps`) | Multi-step / cross-page flows |
+| **Asserts** | Classes | Verification (`expect` wrapped in `test.step`) |
+| **Page objects** | Classes (`BasePage`) | Locators only (`this.el`) |
+| **Components** | Classes | Reusable UI blocks + small interactions |
+| **Fixtures** | DI container + `test.extend()` | Wire layers; resource lifecycle |
+| **Helpers / config** | Functions / constants | Data, formatting, env (stateless) |
 
 ## Anti-Patterns
 
-### Page object managing resources
+### Behaviour or assertions in a page object
 
 ```typescript
-// BAD: page object handling API calls and database
+// BAD: page object with flows, API calls, and expect
 class LoginPage {
   async createUser() { /* API call */ }
-  async deleteUser() { /* API call */ }
-  async signIn(email: string, password: string) { /* UI */ }
+  async signIn(email, password) { /* UI flow */ }
+  async expectError(msg) { /* expect */ }
 }
 ```
 
-Resource lifecycle belongs in fixtures where teardown is guaranteed. Keep only `signIn` in the page object.
+Pages hold **locators only**. Put flows in `assistants/`, verification in `asserts/`, and
+resource lifecycle (API/DB) in a `test.extend()` fixture where teardown is guaranteed.
 
-### Locator-only page objects
+### Calling Playwright locators directly
 
 ```typescript
-// BAD: no methods, just locators
-class LoginPage {
-  emailInput = this.page.getByLabel('Email');
-  passwordInput = this.page.getByLabel('Password');
-  submitBtn = this.page.getByRole('button', { name: 'Sign in' });
-  constructor(private page: Page) {}
-}
+// BAD: raw locator in a test or page object
+await page.getByRole('button', { name: 'Login' }).click();
 ```
 
-Add intent-revealing methods or skip the page object entirely.
+Declare locators via `this.el` and act through the `Element` wrapper so every action
+auto-logs as a `test.step`. See [locators.md](../core/locators.md).
 
 ### Monolithic fixtures
 

@@ -7,11 +7,41 @@ This file covers **reusable test data builders** (factories, Faker, data generat
 
 ## Table of Contents
 
-1. [Factory Pattern](#factory-pattern)
-2. [Faker Integration](#faker-integration)
-3. [Data-Driven Testing](#data-driven-testing)
-4. [Test Data Fixtures](#test-data-fixtures)
-5. [Database Seeding](#database-seeding)
+1. [Where Data Lives](#where-data-lives)
+2. [Factory Pattern](#factory-pattern)
+3. [Faker Integration](#faker-integration)
+4. [Data-Driven Testing](#data-driven-testing)
+5. [Test Data Fixtures](#test-data-fixtures)
+6. [Database Seeding](#database-seeding)
+
+## Where Data Lives
+
+Split test data by responsibility — use **both** locations, not one or the other:
+
+| Kind of data | Location | Why |
+|---|---|---|
+| Environment, base URLs, credentials, storageState paths | `config/env.ts` (from `process.env`) | One source of truth; secrets never hardcoded |
+| Fixed, non-secret data (e.g. invalid-login pairs, known entity names) | `config/testData.ts` (static `const`) | Deterministic; no literals scattered in specs |
+| Entities the test **creates** (users, orders, …) | `helpers/` **factories** (randomised per test) | Isolation under `fullyParallel`; no cross-worker collisions |
+
+```typescript
+// config/testData.ts — fixed, non-secret
+export const INVALID_LOGIN = { username: 'wronguser', password: 'wrongpassword' } as const;
+
+// Reuse for unauthenticated specs instead of repeating the literal everywhere:
+export const NO_AUTH = { storageState: { cookies: [], origins: [] } } as const;
+// in a spec:  test.use(NO_AUTH);
+
+// config/env.ts — environment + credentials (from process.env, defaults allowed for public demo creds)
+export const THE_INTERNET_USER = {
+  username: optional('TI_USERNAME', 'tomsmith'),
+  password: optional('TI_PASSWORD', 'SuperSecretPassword!'),
+} as const;
+```
+
+For anything a test **generates**, use the factory pattern below. Keep both `config/`
+constants and `helpers/` factories **pure** — no browser access, no `expect`. See
+`decide.md` (item 11).
 
 ## Factory Pattern
 
@@ -349,6 +379,28 @@ test.describe("search functionality", () => {
 ```
 
 ## Test Data Fixtures
+
+> **In this framework**, wrap a factory in a fixture that **extends the container's `test`**
+> (from `fixtures/`), so specs receive ready, unique data as an argument instead of calling
+> the factory by hand:
+>
+> ```typescript
+> // fixtures/data.fixture.ts
+> import { generateMember } from '../helpers/data';
+> import { test as base } from './index';   // the DI container's test
+>
+> export const test = base.extend<{ member: ReturnType<typeof generateMember> }>({
+>   member: async ({}, use) => { await use(generateMember()); },
+> });
+> export { expect } from './index';
+> ```
+> ```typescript
+> // tests/signup.spec.ts
+> import { test } from '../fixtures/data.fixture';
+> test('signup', async ({ member, signupAssistant }) => {
+>   await signupAssistant.register(member);
+> });
+> ```
 
 ### Fixture with Factory
 

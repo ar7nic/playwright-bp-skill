@@ -209,13 +209,21 @@ docker-compose run --rm playwright
 
 ## Reporting
 
+> This project is **Allure-first** — make `['allure-playwright', { detail: false }]` the
+> primary reporter and keep `html`/`junit`/`blob` as optional additions. See
+> [reporting.md](reporting.md#allure-default). The examples below show generic reporters;
+> swap the primary one for Allure.
+
 ### Configuration
 
 ```typescript
 // playwright.config.ts
 export default defineConfig({
   reporter: [
-    // Always generate
+    // Primary report (this project: allure-playwright)
+    ["allure-playwright", { resultsDir: "allure-results", detail: false }],
+
+    // Optional: HTML for local drill-down
     ["html", { outputFolder: "playwright-report" }],
 
     // Console output

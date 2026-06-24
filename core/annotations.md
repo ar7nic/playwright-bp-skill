@@ -166,6 +166,33 @@ test.describe("Integration tests", () => {
 
 ## Test Steps
 
+In this framework, **steps are emitted automatically**: the [`Element`](locators.md) wrapper
+wraps every action, and the [`asserts/`](assertions-waiting.md) layer wraps every
+verification, each in a `test.step`. You therefore get a rich, uniform report tree without
+writing `test.step` by hand:
+
+```
+► Auth → login as "tomsmith" and wait for dashboard
+  ► [LoginPage] "Username input" → fill "tomsmith"
+  ► [LoginPage] "Submit button" → click
+► ASSERT "Welcome message" contains text "You logged into a secure area"
+```
+
+**Conventions:**
+- **Do not add manual `test.step` inside page objects, components, or asserts** — the
+  `Element`/assert layers already log. Manual steps there produce duplicate, nested noise.
+- **Do** wrap a whole multi-step flow in **one** `test.step` inside an **assistant**, to
+  group the auto-logged child steps under a readable heading (see the assistant example in
+  [page-object-model.md](page-object-model.md)).
+- **Reuse values returned by reader steps.** `Element` readers (`getText`, `getAttribute`,
+  `getInputValue`, …) already run inside their own `test.step` and return the value — assign
+  it directly instead of wrapping the call in another step:
+  ```typescript
+  const error = await loginPage.flashMessage.getText();  // step logged automatically
+  await commonAsserts.textContains(error, 'invalid');
+  ```
+- In plain (non-framework) Playwright, the manual patterns below still apply.
+
 ### Basic Steps
 
 ```typescript
@@ -238,22 +265,23 @@ test("verify order", async ({ page }) => {
 });
 ```
 
-### Step in Page Object
+### Step in an Assistant (framework)
+
+Page objects hold locators only and must **not** contain `test.step`. Group a flow with a
+single step in an **assistant** instead — the per-action steps from `Element` nest beneath
+it automatically:
 
 ```typescript
-// pages/checkout.page.ts
-export class CheckoutPage {
-  async fillShippingInfo(address: string, city: string) {
-    await test.step("Fill shipping information", async () => {
-      await this.page.getByLabel("Address").fill(address);
-      await this.page.getByLabel("City").fill(city);
-    });
-  }
+// assistants/CheckoutAssistant.ts
+export class CheckoutAssistant {
+  constructor(private readonly deps: AppDeps) {}
 
-  async completePayment(cardNumber: string) {
-    await test.step("Complete payment", async () => {
-      await this.page.getByLabel("Card").fill(cardNumber);
-      await this.page.getByRole("button", { name: "Pay" }).click();
+  async checkout(address: string, city: string, cardNumber: string) {
+    await test.step('Checkout → fill shipping and pay', async () => {
+      await this.deps.checkoutPage.address.fill(address);
+      await this.deps.checkoutPage.city.fill(city);
+      await this.deps.checkoutPage.card.fill(cardNumber);
+      await this.deps.checkoutPage.payBtn.click();
     });
   }
 }

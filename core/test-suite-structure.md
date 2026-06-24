@@ -30,7 +30,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: [["html"], ["list"]],
+  reporter: [["line"], ["allure-playwright", { resultsDir: "allure-results", detail: false }]],
   use: {
     baseURL: "http://localhost:3000",
     trace: "on-first-retry",
@@ -59,7 +59,8 @@ Full user journey tests through the browser.
 ### Structure
 
 ```typescript
-// tests/e2e/checkout.spec.ts
+// tests/e2e/checkout.spec.ts  (shown in plain Playwright form for clarity;
+// for the layered framework version see page-object-model.md)
 import { test, expect } from "@playwright/test";
 
 test.describe("Checkout Flow", () => {
@@ -288,27 +289,37 @@ npx playwright test homepage.spec.ts --update-snapshots
 
 ## Directory Structure
 
+Layers are **top-level folders**, files are **PascalCase** (matching the class name), and
+each layer folder has an `index.ts` **barrel** that re-exports its classes. The barrels feed
+the auto-registering DI container (see [fixtures-hooks.md](fixtures-hooks.md)), so adding a
+class to a barrel automatically creates its fixture.
+
 ```
-tests/
-├── e2e/                    # End-to-end tests
-│   ├── auth.spec.ts
-│   ├── checkout.spec.ts
-│   └── dashboard.spec.ts
-├── component/              # Component tests
-│   ├── Button.spec.tsx
-│   └── Modal.spec.tsx
-├── api/                    # API tests
-│   ├── users.spec.ts
-│   └── products.spec.ts
-├── visual/                 # Visual regression tests
-│   └── homepage.spec.ts
-├── fixtures/               # Custom fixtures
-│   ├── auth.fixture.ts
-│   └── api.fixture.ts
-└── pages/                  # Page objects
-    ├── login.page.ts
-    └── dashboard.page.ts
+tests/                  # specs only — import { test } from '../fixtures'
+  login.spec.ts
+  dashboard.spec.ts
+  auth.setup.ts         # storageState setup project
+assistants/             # AuthAssistant.ts, ...   + index.ts (barrel)
+asserts/                # CommonAsserts.ts, ...    + index.ts (barrel)
+pages/                  # LoginPage.ts, ...        + index.ts (barrel)
+components/             # NavBar.ts, Modal.ts, ... + index.ts (barrel)
+fixtures/               # container.ts, index.ts (auto-registering DI)
+utils/                  # BasePage.ts, Element.ts, ElementFactory.ts
+config/                 # env.ts, testData.ts
+playwright.config.ts
 ```
+
+### Barrel file
+
+```typescript
+// pages/index.ts
+export { LoginPage } from './LoginPage';
+export { DashboardPage } from './DashboardPage';
+// add a class here → its fixture (e.g. `dashboardPage`) appears automatically
+```
+
+> Component/API/visual tests still live under `tests/` (or a sibling folder); the layered
+> folders above describe the E2E framework's support code.
 
 ## Anti-Patterns to Avoid
 
